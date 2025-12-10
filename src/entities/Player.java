@@ -7,9 +7,11 @@ import input.KeyHandler;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.awt.image.BufferedImage;
 import javax.imageio.ImageIO;
 import java.io.IOException;
+import main.Main; // Import Main class for sound effects
 
 public class Player {
     private int qCooldown = 0;
@@ -17,9 +19,11 @@ public class Player {
     private int wCooldown = 0;
     private final int W_COOLDOWN_MAX = 60; // 1 sec
     private int bCooldown = 0;
-    private final int B_COOLDOWN_MAX = 300; // 5 sec
+    private final int B_COOLDOWN_MAX = 180; // 3 sec
     private int nCooldown = 0;
-    private final int N_COOLDOWN_MAX = 300; // 5 sec
+    private final int N_COOLDOWN_MAX = 420; // 7 sec
+    private int mCooldown = 0;
+    private final int M_COOLDOWN_MAX = 720; // 12 sec
 
     //HP of the character
     private int maxHp = 100;
@@ -27,6 +31,12 @@ public class Player {
     private boolean alive = true;
     private boolean takingDamage = false;
     private int flashTimer = 0;
+
+    //Mana system
+    private int maxMana = 100;
+    private int mana = 100;
+    private float manaRegenRate = 0.1f; // Mana per frame (57 mana per second at 60 FPS)
+    private float manaFraction = 0.0f; // Accumulate fractional mana
 
     // Player stats
     private int baseAttack = 100;
@@ -43,6 +53,9 @@ public class Player {
     private double speed;
     private KeyHandler keyH;
     private Object tileManager; // Reference to TileManager for collision
+    private java.util.List<NPC> npcs; // Reference to NPCs for collision
+    private Object objectManager; // Reference to ObjectManager for collision
+    private Object inventory; // Reference to InventoryUI
 
     // State constants
     private static final int IDLE = 0;
@@ -52,6 +65,7 @@ public class Player {
     private static final int HURT = 4; // New state for taking damage
     private static final int FIRESPLASH = 5;
     private static final int ICEPIERCER = 6; // New state for Ice Piercer skill
+    private static final int LIGHTNINGSTORM = 7; // New state for Lightning Storm skill
     private int state = IDLE;  // Start in idle state
 
     // Animation frames [direction][frameIndex]
@@ -62,6 +76,7 @@ public class Player {
     private Image[][] hurtFrames;
     private Image[][] firesplashFrames;
     private Image[][] icepiercerFrames; // New array for Ice Piercer animation frames
+    private Image[][] lightningstormFrames; // New array for Lightning Storm animation frames
     private Image currentImg;  // General image
     private int deathDirection = DOWN;
     private int frameIndex = 0;        // Default for walking
@@ -82,8 +97,8 @@ public class Player {
     private int currentDirection = DOWN;
     
     // Player dimensions for collision
-    public final int playerWidth = 128;
-    public final int playerHeight = 128;
+    public final int playerWidth = 256;
+    public final int playerHeight = 256;
 
     // Smaller collision box for better movement
     private final int collisionWidth = 48;
@@ -96,6 +111,8 @@ public class Player {
 
     // Freeze skill area
     private Rectangle freezeArea = null;
+    // Lightning storm skill area
+    private Rectangle lightningArea = null;
 
     public ArrayList<SlashAttack> getSlashes() {
         return slashes;
@@ -111,6 +128,14 @@ public class Player {
 
     public int getTotalDefense() {
         return baseDefense + equippedDefense;
+    }
+
+    public int getEquippedAttack() {
+        return equippedAttack;
+    }
+
+    public int getEquippedDefense() {
+        return equippedDefense;
     }
 
     public void setEquippedStats(int attack, int defense) {
@@ -159,6 +184,7 @@ public class Player {
         this.px = initialX;
         this.py = initialY;
         this.hp = maxHp;
+        this.mana = maxMana;
         this.alive = true;
         this.state = IDLE;
         this.deathAnimationFinished = false;
@@ -166,8 +192,10 @@ public class Player {
         this.wCooldown = 0;
         this.bCooldown = 0;
         this.nCooldown = 0;
+        this.mCooldown = 0;
         this.slashes.clear();
         this.skillWAttacks.clear();
+        this.conversationCount = 0; // Reset conversation progress on death/continue
     }
 
     // Load frames for 4 directions and reuse for diagonals if needed
@@ -289,6 +317,21 @@ public class Player {
             icepiercerFrames[DOWN_LEFT] = icepiercerFrames[LEFT];
             icepiercerFrames[DOWN_RIGHT] = icepiercerFrames[RIGHT];
         }
+
+        lightningstormFrames = new Image[8][6];
+        BufferedImage lightningstormSpriteSheet = loadSpriteSheet("/assets/characters/player_lightningstorm.png");
+        if (lightningstormSpriteSheet != null) {
+            for (int i = 0; i < 6; i++) {
+                lightningstormFrames[DOWN][i] = getSubImage(lightningstormSpriteSheet, i, 0);
+                lightningstormFrames[LEFT][i] = getSubImage(lightningstormSpriteSheet, i, 1);
+                lightningstormFrames[RIGHT][i] = getSubImage(lightningstormSpriteSheet, i, 2);
+                lightningstormFrames[UP][i] = getSubImage(lightningstormSpriteSheet, i, 3);
+            }
+            lightningstormFrames[UP_LEFT] = lightningstormFrames[LEFT];
+            lightningstormFrames[UP_RIGHT] = lightningstormFrames[RIGHT];
+            lightningstormFrames[DOWN_LEFT] = lightningstormFrames[LEFT];
+            lightningstormFrames[DOWN_RIGHT] = lightningstormFrames[RIGHT];
+        }
     }
     
     private BufferedImage loadSpriteSheet(String path) {
@@ -362,6 +405,34 @@ public class Player {
         if (wCooldown > 0) wCooldown--;
         if (bCooldown > 0) bCooldown--;
         if (nCooldown > 0) nCooldown--;
+        if (mCooldown > 0) mCooldown--;
+
+        // Mana regeneration - properly handles fractional accumulation
+        if (mana < maxMana) {
+            // Double regeneration rate when mana bar is empty (mana <= 0)
+            float currentRegenRate = (mana <= 0) ? manaRegenRate * 2.0f : manaRegenRate;
+
+            // Accumulate fractional mana
+            manaFraction += currentRegenRate;
+
+            // Add whole mana points when fraction reaches 1.0
+            int manaToAdd = (int) manaFraction;
+            if (manaToAdd > 0) {
+                mana += manaToAdd;
+                manaFraction -= manaToAdd;
+
+                // Cap at max mana
+                if (mana > maxMana) {
+                    mana = maxMana;
+                    manaFraction = 0.0f; // Reset fraction if capped
+                }
+
+                // Debug: uncomment to see regeneration
+                // System.out.println("Mana regenerated: " + mana + "/" + maxMana + " (fraction: " + manaFraction + ")");
+            }
+        }
+
+
 
         // --- Q Attack: cooldown-limited, one press = one attack ---
         if (keyH.skillSPACE && qCooldown == 0) { // Changed to skillSPACE
@@ -377,26 +448,44 @@ public class Player {
             keyH.skillW = false; // Reset the skill key after use
         }
 
-        // --- B Attack: cooldown-limited, one press = one attack ---
-        if (keyH.skillB && bCooldown == 0) {
+        // --- B Attack: cooldown-limited, mana cost, one press = one attack ---
+        if (keyH.skillB && bCooldown == 0 && mana >= 30) {
             useSkillB();
+            mana -= 30;
             bCooldown = B_COOLDOWN_MAX;
             keyH.skillB = false; // Reset to prevent continuous skill use
         }
 
-        // --- N Attack: cooldown-limited, one press = one attack ---
-        if (keyH.skillN && nCooldown == 0) {
+        // --- N Attack: cooldown-limited, mana cost, one press = one attack ---
+        if (keyH.skillN && nCooldown == 0 && mana >= 45) {
             useSkillN();
+            mana -= 45;
             nCooldown = N_COOLDOWN_MAX;
             keyH.skillN = false; // Reset to prevent continuous skill use
         }
 
-        // Movement input aggregated
+        // --- M Attack: cooldown-limited, mana cost, one press = one attack ---
+        if (keyH.skillM && mCooldown == 0 && mana >= 80) {
+            useSkillM();
+            mana -= 80;
+            mCooldown = M_COOLDOWN_MAX;
+            keyH.skillM = false; // Reset to prevent continuous skill use
+        }
+
+        // --- Interact with NPCs ---
+        if (keyH.interactJ) {
+            checkNPCInteraction();
+            keyH.interactJ = false; // Reset after use
+        }
+
+
+
+        // Movement input aggregated - frame rate independent
         double dx = 0.0, dy = 0.0;
-        if (keyH.upPressed) dy -= speed;
-        if (keyH.downPressed) dy += speed;
-        if (keyH.leftPressed) dx -= speed;
-        if (keyH.rightPressed) dx += speed;
+        if (keyH.upPressed) dy -= 1.0;
+        if (keyH.downPressed) dy += 1.0;
+        if (keyH.leftPressed) dx -= 1.0;
+        if (keyH.rightPressed) dx += 1.0;
 
         // Normalize diagonal
         if (dx != 0 && dy != 0) {
@@ -404,32 +493,126 @@ public class Player {
             dy *= 0.7071067811865476;
         }
 
-        // Apply movement with tile collision detection using smaller collision box
-        if (tileManager != null) {
-            // Try horizontal movement
-            double proposedX = px + dx;
-            int topLeftX = (int) Math.round(proposedX - collisionWidth / 2.0);
-            int topLeftY = (int) Math.round(py - collisionHeight / 2.0);
-            if (((tile.TileManager) tileManager).isWalkable(topLeftX, topLeftY, collisionWidth, collisionHeight)) {
-                px = proposedX;
-            }
+        // Apply speed and deltaTime for smooth, frame-rate independent movement
+        dx *= speed * deltaTime * 60.0f; // Convert back to pixels per frame equivalent
+        dy *= speed * deltaTime * 60.0f;
 
-            // Try vertical movement
-            double proposedY = py + dy;
-            topLeftX = (int) Math.round(px - collisionWidth / 2.0);
-            topLeftY = (int) Math.round(proposedY - collisionHeight / 2.0);
-            if (((tile.TileManager) tileManager).isWalkable(topLeftX, topLeftY, collisionWidth, collisionHeight)) {
-                py = proposedY;
+        // Apply movement with tile and NPC collision detection using smaller collision box
+        Rectangle playerBounds = new Rectangle(
+            (int) Math.round(px - collisionWidth / 2.0),
+            (int) Math.round(py - collisionHeight / 2.0),
+            collisionWidth, collisionHeight);
+
+        // Try horizontal movement
+        double proposedX = px + dx;
+        Rectangle proposedXBounds = new Rectangle(
+            (int) Math.round(proposedX - collisionWidth / 2.0),
+            (int) Math.round(py - collisionHeight / 2.0),
+            collisionWidth, collisionHeight);
+
+        boolean canMoveX = true;
+
+        // Check map boundaries first (strict boundary collision)
+        if (tileManager != null) {
+            int mapWidth = ((tile.TileManager) tileManager).getMapWidth() * ((tile.TileManager) tileManager).getTileSize();
+            int leftBound = (int) Math.round(proposedX - collisionWidth / 2.0);
+            int rightBound = (int) Math.round(proposedX + collisionWidth / 2.0);
+            if (leftBound < 0 || rightBound >= mapWidth) {
+                canMoveX = false;
             }
-        } else {
-            // No tile manager, free movement
-            px += dx;
-            py += dy;
+        }
+
+        // Check tile collision (solid tiles block movement)
+        if (canMoveX && tileManager != null) {
+            if (!((tile.TileManager) tileManager).isWalkable(
+                (int) Math.round(proposedX - collisionWidth / 2.0),
+                (int) Math.round(py - collisionHeight / 2.0),
+                collisionWidth, collisionHeight)) {
+                canMoveX = false;
+            }
+        }
+
+        // Check NPC collision for horizontal movement
+        if (canMoveX && npcs != null) {
+            for (NPC npc : npcs) {
+                if (proposedXBounds.intersects(npc.getBounds())) {
+                    canMoveX = false;
+                    break;
+                }
+            }
+        }
+
+        // Check object collision for horizontal movement
+        if (canMoveX && objectManager != null) {
+            if (((world.ObjectManager) objectManager).isObjectCollision(
+                (int) Math.round(proposedX - collisionWidth / 2.0),
+                (int) Math.round(py - collisionHeight / 2.0),
+                collisionWidth, collisionHeight)) {
+                canMoveX = false;
+            }
+        }
+
+        if (canMoveX) {
+            px = proposedX;
+            playerBounds = proposedXBounds;
+        }
+
+        // Try vertical movement
+        double proposedY = py + dy;
+        Rectangle proposedYBounds = new Rectangle(
+            (int) Math.round(px - collisionWidth / 2.0),
+            (int) Math.round(proposedY - collisionHeight / 2.0),
+            collisionWidth, collisionHeight);
+
+        boolean canMoveY = true;
+
+        // Check map boundaries first (strict boundary collision)
+        if (tileManager != null) {
+            int mapHeight = ((tile.TileManager) tileManager).getMapHeight() * ((tile.TileManager) tileManager).getTileSize();
+            int topBound = (int) Math.round(proposedY - collisionHeight / 2.0);
+            int bottomBound = (int) Math.round(proposedY + collisionHeight / 2.0);
+            if (topBound < 0 || bottomBound >= mapHeight) {
+                canMoveY = false;
+            }
+        }
+
+        // Check tile collision (solid tiles block movement)
+        if (canMoveY && tileManager != null) {
+            if (!((tile.TileManager) tileManager).isWalkable(
+                (int) Math.round(px - collisionWidth / 2.0),
+                (int) Math.round(proposedY - collisionHeight / 2.0),
+                collisionWidth, collisionHeight)) {
+                canMoveY = false;
+            }
+        }
+
+        // Check NPC collision for vertical movement
+        if (canMoveY && npcs != null) {
+            for (NPC npc : npcs) {
+                if (proposedYBounds.intersects(npc.getBounds())) {
+                    canMoveY = false;
+                    break;
+                }
+            }
+        }
+
+        // Check object collision for vertical movement
+        if (canMoveY && objectManager != null) {
+            if (((world.ObjectManager) objectManager).isObjectCollision(
+                (int) Math.round(px - collisionWidth / 2.0),
+                (int) Math.round(proposedY - collisionHeight / 2.0),
+                collisionWidth, collisionHeight)) {
+                canMoveY = false;
+            }
+        }
+
+        if (canMoveY) {
+            py = proposedY;
         }
         
         boolean isAttacking = !slashes.isEmpty() || !skillWAttacks.isEmpty();
         // Only update state if not in a non-interruptible state
-        if (state != FIRESPLASH && state != HURT && state != DYING && state != ICEPIERCER) {
+        if (state != FIRESPLASH && state != HURT && state != DYING && state != ICEPIERCER && state != LIGHTNINGSTORM) {
             boolean isMoving = (dx != 0 || dy != 0);
 
             if (isAttacking) {
@@ -497,6 +680,20 @@ public class Player {
                     currentImg = firesplashFrames[currentDirection][frameIndex];
                 }
                 break;
+            case LIGHTNINGSTORM:
+                accumulatedAnimationTime += deltaTime;
+                if (accumulatedAnimationTime >= playerFrameDuration) {
+                    frameIndex++;
+                    accumulatedAnimationTime -= playerFrameDuration;
+                    if (frameIndex >= 6) { // Lightning Storm has 6 frames
+                        frameIndex = 0;
+                        state = IDLE;
+                    }
+                }
+                if (frameIndex < 6) {
+                    currentImg = lightningstormFrames[currentDirection][frameIndex];
+                }
+                break;
             case HURT:
                 // Similar logic as DYING and HURT at the top of update()
                 break;
@@ -529,20 +726,7 @@ public class Player {
                 break;
         }
 
-        // Skills B/N/M
-        if (keyH.skillB) {
-            useSkillB();
-            keyH.skillB = false; // Reset to prevent continuous skill use
-        }
-        if (keyH.skillN) {
-            useSkillN();
-            keyH.skillN = false; // Reset to prevent continuous skill use
-        }
-        if (keyH.skillM) {
-            state = ATTACKING;
-            useSkillM();
-            keyH.skillM = false; // Reset to prevent continuous skill use
-        }
+        // All skills are now handled above with proper cooldown checking
     }
 
     public void draw(Graphics g, int screenX, int screenY) {
@@ -576,7 +760,7 @@ public class Player {
             g2.fillRect(drawX, drawY, 32, 32);
         }
 
-        // Draw name above HP bar
+        // Draw name above player (keeping this for identification)
         g.setColor(Color.WHITE);
         g.setFont(new Font("Arial", Font.BOLD, 12));
         FontMetrics fm = g.getFontMetrics();
@@ -585,12 +769,6 @@ public class Player {
         int textX = drawX + (width - textWidth) / 2;
         int textY = drawY - 15;
         g.drawString(name, textX, textY);
-
-        // Draw HP bar above player
-        g.setColor(Color.GRAY);
-        g.fillRect(drawX, drawY - 10, width, 5);
-        g.setColor(Color.GREEN);
-        g.fillRect(drawX, drawY - 10, (int) (width * ((double) hp / maxHp)), 5);
 
         // Skill animations are drawn by GameLoop, not Player itself.
     }
@@ -612,6 +790,7 @@ public class Player {
             case DOWN_RIGHT: sx = drawX + offset; sy = drawY + offset; break;
         }
         slashes.add(new SlashAttack(sx, sy, currentDirection, getTotalAttack()));
+        Main.playSoundEffect("src/assets/audio/sword_slash.wav"); // Play sword sound effect
         state = ATTACKING;
     }
 
@@ -632,6 +811,7 @@ public class Player {
             case DOWN_RIGHT: sx = drawX + offset; sy = drawY + offset; break;
         }
         skillWAttacks.add(new SkillWAttack(sx, sy, currentDirection, getTotalAttack()));
+        Main.playSoundEffect("src/assets/audio/skill_2.wav"); // Play sound effect for Skill W
         state = ATTACKING;
     }
 
@@ -660,6 +840,36 @@ public class Player {
         freezeArea = null;
     }
 
+    public Rectangle getLightningArea() {
+        return lightningArea;
+    }
+
+    public void clearLightningArea() {
+        lightningArea = null;
+    }
+
+    // Cooldown getters
+    public int getBCooldown() { return bCooldown; }
+    public int getBCooldownMax() { return B_COOLDOWN_MAX; }
+    public int getNCooldown() { return nCooldown; }
+    public int getNCooldownMax() { return N_COOLDOWN_MAX; }
+    public int getMCooldown() { return mCooldown; }
+    public int getMCooldownMax() { return M_COOLDOWN_MAX; }
+
+    // HP getters
+    public int getHp() { return hp; }
+    public int getMaxHp() { return maxHp; }
+
+    // Mana getters
+    public int getMana() { return mana; }
+    public int getMaxMana() { return maxMana; }
+
+    // Mana restoration method
+    public void restoreMana(int amount) {
+        mana += amount;
+        if (mana > maxMana) mana = maxMana;
+    }
+
     public void useSkillB() {
         int drawX = (int) Math.round(px);
         int drawY = (int) Math.round(py);
@@ -677,6 +887,7 @@ public class Player {
             case DOWN_RIGHT: sx = drawX + offset; sy = drawY + offset; break;
         }
         skillWAttacks.add(new SkillWAttack(sx, sy, currentDirection, getTotalAttack()));
+        Main.playSoundEffect("src/assets/audio/skill_1.wav"); // Play sound effect for Skill B
         state = FIRESPLASH;
         frameIndex = 0;
         accumulatedAnimationTime = 0f;
@@ -690,11 +901,148 @@ public class Player {
         int centerX = (int) Math.round(px);
         int centerY = (int) Math.round(py);
         freezeArea = new Rectangle(centerX - freezeRadius, centerY - freezeRadius, freezeRadius * 2, freezeRadius * 2);
+        Main.playSoundEffect("src/assets/audio/skill_2.wav"); // Play sound effect for Skill N
     }
-    public void useSkillM() { System.out.println("Skill M used"); }
+    public void useSkillM() {
+        state = LIGHTNINGSTORM;
+        frameIndex = 0;
+        accumulatedAnimationTime = 0f;
+        // Set lightning area around player
+        int lightningRadius = 120; // pixels, slightly larger than freeze
+        int centerX = (int) Math.round(px);
+        int centerY = (int) Math.round(py);
+        lightningArea = new Rectangle(centerX - lightningRadius, centerY - lightningRadius, lightningRadius * 2, lightningRadius * 2);
+        Main.playSoundEffect("src/assets/audio/skill_3.wav"); // Play sound effect for Skill M
+    }
 
     // Method to set TileManager reference for collision detection
     public void setTileManager(Object tileManager) {
         this.tileManager = tileManager;
     }
+
+    // Method to set NPCs reference for collision detection
+    public void setNPCs(java.util.List<NPC> npcs) {
+        this.npcs = npcs;
+    }
+
+    // Method to set ObjectManager reference for collision detection
+    public void setObjectManager(Object objectManager) {
+        this.objectManager = objectManager;
+    }
+
+    // Method to set DialogueUI reference
+    public void setDialogueUI(Object dialogueUI) {
+        this.dialogueUI = dialogueUI;
+    }
+
+    // Method to set InventoryUI reference
+    public void setInventory(Object inventory) {
+        this.inventory = inventory;
+    }
+
+    private Object dialogueUI;
+
+    // Dialogue system
+    public String dialogueText = null;
+    private int dialogueTimer = 0;
+    private final int DIALOGUE_DURATION = 300; // 5 seconds at 60 FPS
+    private int conversationCount = 0; // Track how many times player has talked to NPCs
+
+    private void checkNPCInteraction() {
+        if (npcs != null) {
+            for (NPC npc : npcs) {
+                double distance = Math.sqrt(Math.pow(px - npc.getX(), 2) + Math.pow(py - npc.getY(), 2));
+                if (distance < 80) { // Within 80 pixels (increased range for easier interaction)
+                    startDialogue(npc);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Method to pick up dropped sword icon (add to inventory)
+    public void pickUpSword() {
+        if (inventory != null) {
+            try {
+                inventory.getClass().getMethod("addItem", String.class, int.class).invoke(inventory, "sword", 1);
+                System.out.println("Picked up sword and added to inventory");
+            } catch (Exception e) {
+                System.err.println("Failed to add sword to inventory");
+            }
+        } else {
+            // Fallback: auto-equip if no inventory
+            java.util.Random rand = new java.util.Random();
+            int boost = 10 + rand.nextInt(21); // 10-30 attack boost
+            setEquippedStats(equippedAttack + boost, equippedDefense);
+            System.out.println("Auto-picked up sword, attack increased by " + boost);
+        }
+    }
+
+    private boolean isFacingNPC(NPC npc) {
+        double dx = npc.getX() - px;
+        double dy = npc.getY() - py;
+
+        // Determine the direction from player to NPC
+        int npcDirection;
+        if (Math.abs(dx) > Math.abs(dy)) {
+            // Horizontal direction is dominant
+            npcDirection = (dx > 0) ? RIGHT : LEFT;
+        } else {
+            // Vertical direction is dominant
+            npcDirection = (dy > 0) ? DOWN : UP;
+        }
+
+        // Check if player's current direction matches the direction to NPC
+        // Allow some tolerance for diagonal cases
+        return currentDirection == npcDirection ||
+               (currentDirection == UP_LEFT && (npcDirection == UP || npcDirection == LEFT)) ||
+               (currentDirection == UP_RIGHT && (npcDirection == UP || npcDirection == RIGHT)) ||
+               (currentDirection == DOWN_LEFT && (npcDirection == DOWN || npcDirection == LEFT)) ||
+               (currentDirection == DOWN_RIGHT && (npcDirection == DOWN || npcDirection == RIGHT));
+    }
+
+    private void startDialogue(NPC npc) {
+        conversationCount++;
+        List<String> dialogueLines = new ArrayList<>();
+
+        if ("Yorme".equals(npc.getName())) {
+            if (conversationCount == 1) {
+                // First conversation
+                dialogueLines.add("Old Man: Welcome, young adventurer! The world is full of dangers.");
+                dialogueLines.add("Old Man: You look like you could use some guidance...");
+                dialogueLines.add("Old Man: Remember, not everything is as it seems in these lands.");
+                dialogueLines.add("Old Man: Stay vigilant and trust your instincts!");
+            } else if (conversationCount == 2) {
+                // Second conversation - different dialogue
+                dialogueLines.add("Old Man: Back again, are you? That's good.");
+                dialogueLines.add("Old Man: The path ahead grows more treacherous.");
+                dialogueLines.add("Old Man: Have you discovered the ancient ruins yet?");
+                dialogueLines.add("Old Man: Be careful not to awaken what sleeps there.");
+            } else {
+                // Subsequent conversations - more dialogue
+                dialogueLines.add("Old Man: Ah, you've returned once more.");
+                dialogueLines.add("Old Man: The shadows grow longer with each passing day.");
+                dialogueLines.add("Old Man: Remember what I told you before...");
+                dialogueLines.add("Old Man: Trust no one, question everything.");
+            }
+        } else {
+            dialogueLines.add(npc.getName() + ": Hello there!");
+            dialogueLines.add(npc.getName() + ": What brings you to these parts?");
+        }
+
+        if (dialogueUI != null) {
+            ((DialogueUI) dialogueUI).startDialogue(npc.getName(), dialogueLines);
+        }
+    }
+
+    public void updateDialogue() {
+        if (dialogueTimer > 0) {
+            dialogueTimer--;
+            if (dialogueTimer == 0) {
+                dialogueText = null;
+            }
+        }
+    }
+
+
 }

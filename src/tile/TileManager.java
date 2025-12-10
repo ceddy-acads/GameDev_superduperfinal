@@ -8,9 +8,9 @@ import javax.imageio.ImageIO;
 
 public class TileManager {
     private Tile[] tile;
-    private int tileSize = 48; // Default tile size
-    private int mapWidth = 37; // Expanded map width (1776 pixels)
-    private int mapHeight = 32; // Expanded map height (1536 pixels)
+    private int tileSize = 80; // Default tile size, synced with GameLoop
+    private int mapWidth = 64; // Expanded map width
+    private int mapHeight = 64; // Expanded map height
     private int[][] tileMap; // 2D array to store tile IDs
 
     public TileManager(Object gameLoop) {
@@ -103,10 +103,15 @@ public class TileManager {
     }
 
     public void createExampleMap() {
-        // Initialize the 5x5 tile map
+        // Initialize the tile map with water (tile 2)
         tileMap = new int[mapHeight][mapWidth];
+        for (int row = 0; row < mapHeight; row++) {
+            for (int col = 0; col < mapWidth; col++) {
+                tileMap[row][col] = 2; // water
+            }
+        }
 
-        // Load map from text file
+        // Load map from text file, overwriting with the actual map data
         loadMapFromFile("world01");
     }
 
@@ -217,5 +222,20 @@ public class TileManager {
             }
         }
         return true; // All tiles are walkable
+    }
+
+    // Method to get tile ID at specific tile coordinates
+    public int getTileId(int tileX, int tileY) {
+        if (tileX >= 0 && tileX < mapWidth && tileY >= 0 && tileY < mapHeight) {
+            return tileMap[tileY][tileX];
+        }
+        return -1; // Invalid position
+    }
+
+    // Method to set tile ID at specific tile coordinates
+    public void setTile(int tileX, int tileY, int tileId) {
+        if (tileX >= 0 && tileX < mapWidth && tileY >= 0 && tileY < mapHeight) {
+            tileMap[tileY][tileX] = tileId;
+        }
     }
 }

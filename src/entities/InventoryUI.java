@@ -14,6 +14,13 @@ public class InventoryUI extends JPanel { // Changed from JFrame
 
     enum ItemType { EQUIPMENT, CONSUMABLE, MATERIAL }
 
+    // Callback interface for item usage effects
+    public interface ItemUsageCallback {
+        void onItemUsed(String itemId);
+    }
+
+    private ItemUsageCallback usageCallback;
+
     static class Item {
         String id;
         String name;
@@ -77,6 +84,11 @@ public class InventoryUI extends JPanel { // Changed from JFrame
 
     // Modified constructor to match GameLoop's expectation
     public InventoryUI(int screenWidth, int screenHeight) {
+        this(screenWidth, screenHeight, null);
+    }
+
+    public InventoryUI(int screenWidth, int screenHeight, ItemUsageCallback callback) {
+        this.usageCallback = callback;
         // Removed JFrame specific calls
         setPreferredSize(new Dimension(screenWidth, screenHeight)); // Set preferred size
         setBackground(PARCHMENT); // Set background for the JPanel
@@ -99,9 +111,16 @@ public class InventoryUI extends JPanel { // Changed from JFrame
         equipmentSlots.put("Weapon", new Slot());
         equipmentSlots.put("Ring", new Slot());
 
+        // Put skill items in the first 3 slots for the hotbar
+        addItemToInventory(cloneItem("skill_fire"));
+        addItemToInventory(cloneItem("skill_ice"));
+        addItemToInventory(cloneItem("skill_lightning"));
+
+        // Add other items after skills
         addItemToInventory(cloneItem("flamebrand"));
         addItemToInventory(cloneItem("sword"));
         addItemToInventory(cloneItem("potion_red"), 3);
+        addItemToInventory(cloneItem("potion_blue"), 2);
         addItemToInventory(cloneItem("ring_green"));
 
         // JPanel root = new JPanel(new BorderLayout()); // No longer need a root panel, this JPanel is the root
@@ -402,6 +421,11 @@ public class InventoryUI extends JPanel { // Changed from JFrame
         if (selectedSlot == null || selectedSlot.item == null) return;
         if (selectedSlot.item.type != ItemType.CONSUMABLE) return;
 
+        // Notify callback before consuming the item
+        if (usageCallback != null) {
+            usageCallback.onItemUsed(selectedSlot.item.id);
+        }
+
         selectedSlot.amount--;
         if (selectedSlot.amount <= 0) selectedSlot.item = null;
 
@@ -420,6 +444,11 @@ public class InventoryUI extends JPanel { // Changed from JFrame
     }
 
     private void loadSampleItems() {
+        // Skill items for hotbar
+        Item fireSkill = new Item("skill_fire", "Fire Splash", ItemType.CONSUMABLE, "Launches a fireball that deals area damage", "/assets/ui/skill_firesplash.png");
+        Item iceSkill = new Item("skill_ice", "Ice Piercer", ItemType.CONSUMABLE, "Freezes enemies in an area around the player", "/assets/ui/skill_icepiercer.png");
+        Item lightningSkill = new Item("skill_lightning", "Lightning Storm", ItemType.CONSUMABLE, "Calls down lightning that damages all enemies in an area", "/assets/ui/skill_lightningstorm.png");
+
         Item sword = new Item("sword", "Short Sword", ItemType.EQUIPMENT, "A basic sword", "/icons/sword.png");
         sword.stats.put("Damage", "6–10");
 
@@ -429,9 +458,12 @@ public class InventoryUI extends JPanel { // Changed from JFrame
         Item potion = new Item("potion_red", "Health Potion", ItemType.CONSUMABLE, "Restores health", "/icons/potion_red.png");
         potion.stack = 10;
 
+        Item manaPotion = new Item("potion_blue", "Mana Potion", ItemType.CONSUMABLE, "Restores mana", "/icons/potion_blue.png");
+        manaPotion.stack = 10;
+
         Item ring = new Item("ring_green", "Emerald Ring", ItemType.EQUIPMENT, "A shiny ring", "/icons/ring.png");
 
-        allItems.addAll(Arrays.asList(sword, flame, potion, ring));
+        allItems.addAll(Arrays.asList(fireSkill, iceSkill, lightningSkill, sword, flame, potion, manaPotion, ring));
     }
 
     private Item cloneItem(String id) {
@@ -459,5 +491,21 @@ public class InventoryUI extends JPanel { // Changed from JFrame
     // Public getter for inventorySlots, required by Hotbar
     public java.util.List<Slot> getInventorySlots() {
         return inventorySlots;
+    }
+
+    // Public method to add items to inventory (for powerups, etc.)
+    public void addItem(String itemId, int amount) {
+        Item item = cloneItem(itemId);
+        if (item != null) {
+            addItemToInventory(item, amount);
+            refreshGrid();
+        }
+    }
+
+    // Update size for responsive layout
+    public void updateSize(int newWidth, int newHeight) {
+        setPreferredSize(new Dimension(newWidth, newHeight));
+        revalidate();
+        repaint();
     }
 }
